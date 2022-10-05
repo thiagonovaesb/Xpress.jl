@@ -1460,6 +1460,38 @@ function MOI.delete(
 end
 
 """
+    _set_variable_fixed(model, info, value) #TODO
+
+This function is used to indirectly set the lower bound of a variable.
+
+We need to do it this way to account for potential lower bounds of 0.0 added by
+VectorOfVariables-in-SecondOrderCone constraints.
+
+See also `_get_variable_lower_bound`.
+"""
+function _set_variable_fixed(model, info, value)
+    if info.num_soc_constraints == 0
+        # No SOC constraints, set directly.
+        @assert isnan(info.lower_bound_if_soc)
+        Xpress.chgbounds(model.inner, [info.column], Cchar['B'], [value])
+    elseif value >= 0.0
+        # Regardless of whether there are SOC constraints, this is a valid bound
+        # for the SOC constraint and should over-ride any previous bounds.
+        info.lower_bound_if_soc = NaN
+        Xpress.chgbounds(model.inner, [info.column], Cchar['B'], [value])
+    else
+        # Previously, we had a non-negative lower bound (i.e., it was set in the
+        # case above). Now we're setting this with a negative one, but there are
+        # still some SOC constraints, so we cache `value` and set the variable
+        # lower bound to `0.0`.
+        # or
+        # Previously, we had a negative lower bound. We're setting this with
+        # another negative one, but there are still some SOC constraints.
+        error("Cannot fix a variable from the soc constraint to a value small than zero.")
+    end
+end
+
+"""
     _set_variable_lower_bound(model, info, value)
 
 This function is used to indirectly set the lower bound of a variable.
@@ -1661,6 +1693,20 @@ function MOI.set(
     end
     info.previous_lower_bound = _get_variable_lower_bound(model, info)
     info.previous_upper_bound = _get_variable_upper_bound(model, info)
+    return
+end
+
+function MOI.set(
+    model::Optimizer,
+    ::MOI.ConstraintSet,
+    c::MOI.ConstraintIndex{MOI.VariableIndex, S}, s::S
+) where {S<:MOI.EqualTo{Float64}}
+    MOI.throw_if_not_valid(model, c)
+    lower, _ = _bounds(s)
+    info = _info(model, c)
+    _set_variable_fixed(model, info, lower)
+    info.previous_lower_bound = lower
+    info.previous_upper_bound = lower
     return
 end
 
